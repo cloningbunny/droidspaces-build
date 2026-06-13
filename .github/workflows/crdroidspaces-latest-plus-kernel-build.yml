@@ -1,4 +1,4 @@
-name: crDroidSpaces++ Kernel Build (crDroid + GPU OC + UFW/Fail2Ban)
+name: crDroidSpaces++ Kernel Build 2(crDroid + GPU OC + UFW/Fail2Ban)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
         type: boolean
 
 env:
-  KERNEL_REPO: https://github.com/Terminator-J/crdroid_kernel_oneplus_sdm845-common.git
+  KERNEL_REPO: https://github.com/Terminator-J/crdroid_kernel_oneplus_sdm845.git
   KERNEL_BRANCH: 15.0-test
   DEVICE: ${{ github.event.inputs.device || 'enchilada' }}
   GPU_OC: ${{ github.event.inputs.gpu_oc || true }}
