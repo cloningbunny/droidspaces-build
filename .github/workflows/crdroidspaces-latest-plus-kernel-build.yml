@@ -77,8 +77,8 @@ jobs:
           
           echo "GPU OC patches applied"
           
-          patch -p1 < $GITHUB_WORKSPACE/patches/01.fix_kernel_panic_in_xt_qtaguid.patch
-          patch -p1 < $GITHUB_WORKSPACE/patches/02.fix_restore cgroup file prefix handling.patch
+          patch -p1 < /home/runner/work/patches/01.fix_kernel_panic_in_xt_qtaguid.patch
+          patch -p1 < /home/runner/work/patches/02.fix_restore cgroup file prefix handling.patch
           
           echo "Required Non-GKI patches applied for droidspaces"
 
