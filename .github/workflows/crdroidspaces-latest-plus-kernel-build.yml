@@ -1,0 +1,327 @@
+name: crDroidSpaces++ Kernel Build (crDroid + GPU OC + UFW/Fail2Ban)
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Device to build for'
+        required: true
+        default: 'enchilada'
+        type: choice
+        options:
+          - 'enchilada'
+          - 'fajita'
+      gpu_oc:
+        description: 'Enable GPU Overclock (812MHz)'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  KERNEL_REPO: https://github.com/Terminator-J/crdroid_kernel_oneplus_sdm845-common.git
+  KERNEL_BRANCH: 15.0-test
+  DEVICE: ${{ github.event.inputs.device || 'enchilada' }}
+  GPU_OC: ${{ github.event.inputs.gpu_oc || true }}
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+        with:
+          path: build-scripts
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev make gcc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git
+          mkdir -p ~/kernel-build
+
+      - name: Clone kernel source
+        run: |
+          cd ~/kernel-build
+          git clone --depth 1 --branch ${{ env.KERNEL_BRANCH }} \
+            ${{ env.KERNEL_REPO }} android_kernel_oneplus_sdm845
+          cd android_kernel_oneplus_sdm845
+          echo "Kernel source cloned"
+          echo "Latest commit: $(git log --oneline -1)"
+
+      - name: Apply GPU OC and Droidspaces patches
+        if: env.GPU_OC == 'true'
+        run: |
+          cd ~/kernel-build/android_kernel_oneplus_sdm845
+          echo "Applying GPU OC patches..."
+          
+          # Cherry-pick the GPU OC commit from Terminator-J's crDroid++ branch
+          git remote add tj https://github.com/Terminator-J/crdroid_kernel_oneplus_sdm845.git 2>/dev/null || true
+          git fetch tj 15.0-plusplus_KSUN3_test1 --depth=5 2>/dev/null || {
+            echo "Could not fetch from upstream, applying manual patches..."
+          }
+          
+          # Try to cherry-pick the GPU OC commit
+          if git cherry-pick 5ea4c7ee301a67b528ca2ebdbc53b4f5d4fbdcd6 --no-commit 2>/dev/null; then
+            echo "GPU OC commit cherry-picked successfully"
+          else
+            echo "Cherry-pick failed, applying manual GPU OC..."
+            git checkout HEAD -- .
+            
+            # Manual GPU OC: Change 828MHz to 812MHz in frequency table
+            sed -i 's/828000000/812000000/g' arch/arm64/boot/dts/qcom/sdm845-v2.dtsi 2>/dev/null || true
+            sed -i 's/F(828000000, P_CRC_DIV, 1, 0, 0),/F(812000000, P_CRC_DIV, 1, 0, 0),/' drivers/clk/qcom/gpucc-sdm845.c 2>/dev/null || true
+          fi
+          
+          echo "GPU OC patches applied"
+          
+          patch -p1 < patches/01.fix_kernel_panic_in_xt_qtaguid.patch
+          patch -p1 < patches/02.fix_restore cgroup file prefix handling.patch
+          
+          echo "Required Non-GKI patches applied for droidspaces"
+
+      - name: Setup kernel configuration
+        run: |
+          cd ~/kernel-build/android_kernel_oneplus_sdm845
+          
+          # Start with enchilada defconfig
+          make O=out ARCH=arm64 enchilada_defconfig
+          
+          # Enable BBR
+          echo "CONFIG_TCP_CONG_BBR=y" >> out/.config
+          echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> out/.config
+          
+          # Enable UFW/Fail2Ban networking
+          echo "CONFIG_NETFILTER_XT_MATCH_COMMENT=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_STATE=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_HL=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_TARGET_REJECT=y" >> out/.config
+          echo "CONFIG_IP_NF_TARGET_REJECT=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_TARGET_LOG=y" >> out/.config
+          echo "CONFIG_IP_NF_TARGET_ULOG=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_RECENT=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_LIMIT=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_OWNER=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_PKTTYPE=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_MARK=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_TARGET_MARK=y" >> out/.config
+          
+          # Droidspaces container support
+          echo "CONFIG_SYSCTL=y" >> out/.config
+          echo "CONFIG_SYSVIPC=y" >> out/.config
+          echo "CONFIG_POSIX_MQUEUE=y" >> out/.config
+          echo "CONFIG_NAMESPACES=y" >> out/.config
+          echo "CONFIG_PID_NS=y" >> out/.config
+          echo "CONFIG_UTS_NS=y" >> out/.config
+          echo "CONFIG_IPC_NS=y" >> out/.config
+          echo "CONFIG_SECCOMP=y" >> out/.config
+          echo "CONFIG_SECCOMP_FILTER=y" >> out/.config
+          echo "CONFIG_CGROUPS=y" >> out/.config
+          echo "CONFIG_CGROUP_DEVICE=y" >> out/.config
+          echo "CONFIG_CGROUP_PIDS=y" >> out/.config
+          echo "CONFIG_MEMCG=y" >> out/.config
+          echo "CONFIG_CGROUP_SCHED=y" >> out/.config
+          echo "CONFIG_FAIR_GROUP_SCHED=y" >> out/.config
+          echo "CONFIG_CGROUP_FREEZER=y" >> out/.config
+          echo "CONFIG_CGROUP_NET_PRIO=y" >> out/.config
+          echo "CONFIG_DEVTMPFS=y" >> out/.config
+          echo "CONFIG_OVERLAY_FS=y" >> out/.config
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> out/.config
+          echo "CONFIG_TMPFS_XATTR=y" >> out/.config
+          echo "CONFIG_FW_LOADER=y" >> out/.config
+          echo "CONFIG_FW_LOADER_USER_HELPER=y" >> out/.config
+          echo "CONFIG_FW_LOADER_COMPRESS=y" >> out/.config
+          echo "CONFIG_NET_NS=y" >> out/.config
+          echo "CONFIG_VETH=y" >> out/.config
+          echo "CONFIG_BRIDGE=y" >> out/.config
+          echo "CONFIG_NETFILTER=y" >> out/.config
+          echo "CONFIG_BRIDGE_NETFILTER=y" >> out/.config
+          echo "CONFIG_NETFILTER_ADVANCED=y" >> out/.config
+          echo "CONFIG_NF_CONNTRACK=y" >> out/.config
+          echo "CONFIG_IP_NF_IPTABLES=y" >> out/.config
+          echo "CONFIG_IP_NF_FILTER=y" >> out/.config
+          echo "CONFIG_NF_NAT=y" >> out/.config
+          echo "CONFIG_NF_TABLES=y" >> out/.config
+          echo "CONFIG_IP_NF_TARGET_MASQUERADE=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_TARGET_TCPMSS=y" >> out/.config
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> out/.config
+          echo "CONFIG_NF_CONNTRACK_NETLINK=y" >> out/.config
+          echo "CONFIG_NF_NAT_REDIRECT=y" >> out/.config
+          echo "CONFIG_IP_ADVANCED_ROUTER=y" >> out/.config
+          echo "CONFIG_IP_MULTIPLE_TABLES=y" >> out/.config
+          echo "CONFIG_NF_CONNTRACK_IPV4=y" >> out/.config
+          echo "CONFIG_NF_NAT_IPV4=y" >> out/.config
+          echo "CONFIG_IP_NF_NAT=y" >> out/.config
+          echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> out/.config
+          
+          # Disable KernelSU if present
+          echo "# CONFIG_KSU is not set" >> out/.config
+          
+          # Update config
+          make O=out ARCH=arm64 olddefconfig
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -o pipefail
+          cd ~/kernel-build/android_kernel_oneplus_sdm845
+          
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          
+          # Build kernel with warning suppressions for newer GCC
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC="gcc -Wno-error=format -Wno-error=address -Wno-error=misleading-indentation -Wno-error=enum-int-mismatch -Wno-error=memset-elt-size -Wno-error=stringop-overread -Wno-error=duplicate-decl-specifier -Wno-error=array-parameter= -Wno-error=maybe-uninitialized" \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image.gz \
+            2>&1 | tee build.log
+
+      - name: Build device tree
+        shell: bash
+        run: |
+          set -o pipefail
+          cd ~/kernel-build/android_kernel_oneplus_sdm845
+          
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          
+          # Build device tree for selected device
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC="gcc -Wno-error=format -Wno-error=address -Wno-error=misleading-indentation -Wno-error=enum-int-mismatch -Wno-error=memset-elt-size -Wno-error=stringop-overread -Wno-error=duplicate-decl-specifier -Wno-error=array-parameter= -Wno-error=maybe-uninitialized" \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            dtbs \
+            2>&1 | tee -a build.log
+
+      - name: Create kernel image with DTB
+        run: |
+          cd ~/kernel-build/android_kernel_oneplus_sdm845
+          
+          # Find the correct DTB for the device
+          # SDM845 v2 is used for both enchilada (6) and fajita (6T)
+          if [ -f "out/arch/arm64/boot/dts/qcom/sdm845-v2.dtb" ]; then
+            DTB_FILE="out/arch/arm64/boot/dts/qcom/sdm845-v2.dtb"
+          elif [ -f "out/arch/arm64/boot/dts/qcom/sdm845-v2.1.dtb" ]; then
+            DTB_FILE="out/arch/arm64/boot/dts/qcom/sdm845-v2.1.dtb"
+          else
+            DTB_FILE="out/arch/arm64/boot/dts/qcom/sdm845.dtb"
+          fi
+          
+          echo "Using DTB: ${DTB_FILE}"
+          
+          # Concatenate kernel + dtb for Image.gz-dtb
+          cat out/arch/arm64/boot/Image.gz ${DTB_FILE} > out/arch/arm64/boot/Image.gz-dtb
+          
+          echo "Kernel image created:"
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Create flashable zip
+        run: |
+          cd ~/kernel-build/android_kernel_oneplus_sdm845
+          
+          # Clone AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ~/anykernel
+          
+          # Copy kernel image
+          cp out/arch/arm64/boot/Image.gz-dtb ~/anykernel/
+          
+          # Create zip
+          cd ~/anykernel
+          
+          # Update anykernel.sh
+          sed -i 's/ExampleKernel by osm0sis/crDroidSpaces++ Kernel/' anykernel.sh
+          sed -i "s/=oneplus6/=${{ env.DEVICE }}/" anykernel.sh
+          
+          # Add info to banner
+          echo "" >> banner
+          echo "crDroidSpaces++ Kernel for OnePlus ${{ env.DEVICE == 'enchilada' && '6' || '6T' }}" >> banner
+          echo "Based on Terminator-J's crDroid 15.0 kernel" >> banner
+          if [ "${{ env.GPU_OC }}" = "true" ]; then
+            echo "GPU Overclock: 812MHz max" >> banner
+          fi
+          echo "" >> banner
+          echo "Features:" >> banner
+          echo "- BBR TCP congestion" >> banner
+          echo "- UFW/Fail2Ban support" >> banner
+          echo "- Droidspaces container support" >> banner
+          echo "- No KernelSU/susfs" >> banner
+          
+          # Create zip
+          ZIP_NAME="crDroidSpaces++-kernel-${{ env.DEVICE }}-$(date +%Y%m%d)"
+          if [ "${{ env.GPU_OC }}" = "true" ]; then
+            ZIP_NAME="${ZIP_NAME}-OCGPU"
+          fi
+          ZIP_NAME="${ZIP_NAME}.zip"
+          
+          zip -r9 "${ZIP_NAME}" * -x .git README.md anykernel.sh.in
+          
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          cp "${ZIP_NAME}" ~/kernel-build/android_kernel_oneplus_sdm845/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ~/kernel-build/android_kernel_oneplus_sdm845/${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      - name: Generate release tag
+        id: release_tag
+        run: |
+          RELEASE_DATE=$(date +%Y%m%d)
+          RELEASE_DATE_HYPHEN=$(date +%Y-%m-%d)
+          echo "tag_name=crdroidspaces++-${{ env.DEVICE }}-${RELEASE_DATE}" >> $GITHUB_OUTPUT
+          echo "release_name=crDroidSpaces++ Kernel ${{ env.DEVICE }} - ${RELEASE_DATE_HYPHEN}" >> $GITHUB_OUTPUT
+          echo "Generated tag: crdroidspaces++-${{ env.DEVICE }}-${RELEASE_DATE}"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag_name }}
+          name: "${{ steps.release_tag.outputs.release_name }}"
+          body: |
+            crDroidSpaces++ Kernel for OnePlus ${{ env.DEVICE == 'enchilada' && '6' || '6T' }}
+            
+            **Features:**
+            - Based on Terminator-J's crDroid kernel (branch: 15.0-test)
+            - BBR TCP congestion control
+            - UFW/Fail2Ban networking support
+            ${{ env.GPU_OC == 'true' && '- GPU Overclock: 812MHz max (up from ~710MHz stock)' || '- Stock GPU frequencies' }}
+            
+            **Droidspaces Compatible:**
+            - No susfs (causes container boot failures)
+            - No KernelSU (unnecessary for container root)
+            - Full namespace/cgroup support
+            
+            **Notes:**
+            - Flash via recovery (TWRP/OrangeFox)
+            - GPU OC is silicon lottery - some devices may not boot at 812MHz
+            
+            **Source:**
+            - https://github.com/Terminator-J/crdroid_kernel_oneplus_sdm845
+          files: ~/kernel-build/android_kernel_oneplus_sdm845/${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        run: |
+          echo "========================================="
+          echo "crDroidSpaces++ Kernel Build Complete"
+          echo "========================================="
+          echo "Device: ${{ env.DEVICE }}"
+          echo "GPU OC: ${{ env.GPU_OC }}"
+          echo "Output: ${{ env.ZIP_NAME }}"
+          echo "========================================="
